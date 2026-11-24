@@ -1,14 +1,14 @@
 import Slider from "@react-native-community/slider";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Pressable, Text, View } from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
+import { Alert, Platform, Pressable, Text, View } from "react-native";
 import { analysisVersion, analyze, policy, walkDuration } from "../../src/analysis";
 import { Scatter, heatColor, legend } from "../../src/charts";
-import { database, deleteTrial, readTrial } from "../../src/db";
+import { database, deleteTrial, readTrial, write } from "../../src/db";
 import { exportWalk } from "../../src/export";
+import MapView, { Marker, Polyline, type MapHandle } from "../../src/map";
 import { routeColors, type Point } from "../../src/routes";
-import { Body, Button, Card, Label, MapAttribution, Metric, Notice, Screen, Title, displayStatus, duration, message, palette, styles } from "../../src/ui";
+import { Body, Button, Card, Label, MapAttribution, Metric, Notice, Screen, Title, confirmAction, displayStatus, duration, message, palette, styles } from "../../src/ui";
 import { command } from "../../src/watch";
 
 const tabs = ["Overview", "Replay", "HR map", "HR vs distance", "HR vs slope", "Data quality"] as const;
@@ -23,6 +23,7 @@ export default function ReviewTrial() {
   const [problem, setProblem] = useState("");
   const [busy, setBusy] = useState(false);
   const [lag, setLag] = useState(0);
+  const [showExports, setShowExports] = useState(false);
   const refresh = useCallback(async () => {
     try { setWalk(await readTrial(id)); } catch (error) { setProblem(message(error)); }
   }, [id]);
@@ -48,32 +49,41 @@ export default function ReviewTrial() {
     try { await work(); } catch (error) { setProblem(message(error)); }
     finally { setBusy(false); }
   };
-  const rename = () => Alert.prompt("Rename trial", "Use a neutral title.", (input) => {
-    const title = input.trim().slice(0, 80);
+  const saveTitle = (input: string | null) => {
+    const title = input?.trim().slice(0, 80);
     if (!title) return;
     void run(async () => {
-      await (await database()).runAsync("UPDATE trials SET title = ? WHERE id = ?", title, id);
+      await write(await database(), async (tx) => {
+        await tx.runAsync("UPDATE trials SET title = ? WHERE id = ?", title, id);
+      });
       await refresh();
     });
-  }, "plain-text", trial.title);
-  const remove = () => Alert.alert("Delete this trial?", "The app will remove its local records and request deletion from the Watch. Shared copies and Apple Health workouts are managed separately.", [
-    { text: "Cancel", style: "cancel" },
-    { text: "Delete trial", style: "destructive", onPress: () => void run(async () => {
+  };
+  const rename = () => {
+    if (Platform.OS === "web") saveTitle(window.prompt("Rename trial. Use a neutral title.", trial.title));
+    else Alert.prompt("Rename trial", "Use a neutral title.", saveTitle, "plain-text", trial.title);
+  };
+  const remove = () => confirmAction("Delete this trial?", trial.mode === "paired"
+    ? "The app will remove its local records and request deletion from the Watch. Shared copies and Apple Health workouts are managed separately."
+    : "The app will remove its local records. Downloaded or shared copies are managed separately.", "Cancel", "Delete trial",
+    () => void run(async () => {
       await deleteTrial(id);
       if (trial.mode === "paired") await command("DELETE", id).catch(() => false);
       router.replace("/trials");
-    }) },
-  ]);
-  const share = () => Alert.alert("Share trial export",
-    "The full ZIP includes exact locations, UTC times and raw readings. The reduced ZIP still contains heart-rate readings and route metrics.", [
+    }));
+  const exportDetails = "The full ZIP includes exact locations, UTC times and raw readings. The reduced ZIP includes route metrics and any heart-rate readings.";
+  const share = () => {
+    if (Platform.OS === "web") { setShowExports(!showExports); return; }
+    Alert.alert("Share trial export", exportDetails, [
       { text: "Cancel", style: "cancel" },
       { text: "Without exact locations", onPress: () => void run(() => exportWalk(walk, false, lag)) },
       { text: "Full ZIP", onPress: () => void run(() => exportWalk(walk, true, lag)) },
     ]);
+  };
 
   return <Screen>
     <Title>{trial.title}</Title>
-    <Body>{route.labels.join(" · ")} · {displayStatus(trial.status)}</Body>
+    <Body>{route.labels.join(" · ")} · {displayStatus(trial.status)}{trial.mode === "gps" ? " · GPS-only test" : ""}</Body>
     {trial.mode === "demo" && <Notice>Synthetic demo. All measurements are simulated.</Notice>}
     {trial.reason || problem ? <Notice>{problem || trial.reason}</Notice> : null}
     {waiting && <Card>
@@ -111,6 +121,11 @@ export default function ReviewTrial() {
       </Card>
       {!open && <>
         <Button title="Export ZIP" onPress={share} disabled={busy} />
+        {showExports && <Card>
+          <Body>{exportDetails}</Body>
+          <Button title="Without exact locations" secondary disabled={busy} onPress={() => run(() => exportWalk(walk, false, lag))} />
+          <Button title="Full ZIP" secondary disabled={busy} onPress={() => run(() => exportWalk(walk, true, lag))} />
+        </Card>}
         <Button title="Rename trial" onPress={rename} secondary disabled={busy} />
         <Button title="Delete trial" onPress={remove} secondary disabled={busy} />
       </>}
@@ -146,7 +161,7 @@ export default function ReviewTrial() {
       {elapsed && <Body>Paused time {duration(elapsed.paused)}</Body>}
       <Body>Algorithm {routes.algorithm} · graph {routes.graphVersion} · elevation {routes.demVersion}</Body>
       <Body>Analysis {analysisVersion} · HR alignment requires nearby GPS and a Watch clock probe with at most {policy.clockMaxUncertaintyMs / 1000} s uncertainty.</Body>
-      {walk.events.filter((event) => ["pause", "resume", "off_route", "location_error", "recovered", "error"].includes(event.type)).map((event, i) =>
+      {walk.events.filter((event) => ["pause", "resume", "off_route", "location_error", "location_unavailable", "recovered", "error"].includes(event.type)).map((event, i) =>
         <Body key={i}>{new Date(event.observed_at_ms).toLocaleTimeString()} · {event.device} · {event.type.replaceAll("_", " ")}</Body>)}
     </Card>}
   </Screen>;
@@ -154,7 +169,7 @@ export default function ReviewTrial() {
 
 type Analysis = ReturnType<typeof analyze>;
 function TraceView({ walk, data, heat }: { walk: Walk; data: Analysis; heat: boolean }) {
-  const map = useRef<MapView>(null);
+  const map = useRef<MapHandle>(null);
   const [playing, setPlaying] = useState(false);
   const [rate, setRate] = useState(1);
   const [follow, setFollow] = useState(false);
@@ -209,8 +224,11 @@ function TraceView({ walk, data, heat }: { walk: Walk; data: Analysis; heat: boo
       <Body>Same scale across trials. Colors use nearby observed readings within {policy.heatMs / 1000} s of both segment ends.</Body>
       {inspection && <Body>{inspection}</Body>}
     </> : <>
-      <Slider accessibilityLabel="Replay time" value={elapsed} minimumValue={0} maximumValue={Math.max(1, total)}
-        onValueChange={setElapsed} disabled={!data.trace.length} minimumTrackTintColor={palette.green} />
+      {Platform.OS === "web"
+        ? <input type="range" aria-label="Replay time" value={elapsed} min={0} max={Math.max(1, total)}
+          onChange={(event) => setElapsed(event.currentTarget.valueAsNumber)} disabled={!data.trace.length} style={{ accentColor: palette.green }} />
+        : <Slider accessibilityLabel="Replay time" value={elapsed} minimumValue={0} maximumValue={Math.max(1, total)}
+          onValueChange={setElapsed} disabled={!data.trace.length} minimumTrackTintColor={palette.green} />}
       <Body>{duration(elapsed)} / {duration(total)} · {new Date(time).toLocaleTimeString(undefined, { timeZone: walk.trial.timezone })}</Body>
       <Body>{cursor ? `${number(cursor.meters)} m walked · GPS accuracy ${number(accuracy?.horizontal_accuracy_m)} m` :
         "Position unavailable during this interval."}</Body>

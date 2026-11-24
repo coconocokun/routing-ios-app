@@ -2,8 +2,9 @@ import { CryptoDigestAlgorithm, digestStringAsync, randomUUID } from "expo-crypt
 import { Directory, File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import { strToU8, zipSync } from "fflate";
+import { Platform } from "react-native";
 import { analysisVersion, analyze, policy, walkDuration } from "./analysis.ts";
-import { database, type readTrial } from "./db.ts";
+import { database, write, type readTrial } from "./db.ts";
 import { version } from "./protocol.ts";
 
 type Walk = NonNullable<Awaited<ReturnType<typeof readTrial>>>;
@@ -17,7 +18,7 @@ const csv = (columns: string[], rows: Row[]) => [columns.join(","), ...rows.map(
 const json = (value: unknown) => JSON.stringify(value, null, 2);
 
 export async function exportWalk(walk: Walk, shareCoordinates: boolean, lagSeconds: number) {
-  if (!await Sharing.isAvailableAsync()) throw new Error("The iOS share sheet is unavailable.");
+  if (Platform.OS !== "web" && !await Sharing.isAvailableAsync()) throw new Error("The iOS share sheet is unavailable.");
   const { trial, gps, hr, events, route, routes } = walk;
   const trialMetadata = { trial_id: trial.id, status: trial.status, mode: trial.mode,
     protocol_version: version, route_labels: route.labels, participant_code: trial.participant,
@@ -54,7 +55,8 @@ export async function exportWalk(walk: Walk, shareCoordinates: boolean, lagSecon
       "# Walking Study export",
       shareCoordinates ? "This archive contains exact locations, timestamps and source IDs." :
         "This archive omits exact locations, absolute times, titles, event logs and HealthKit sample IDs. Distance, slope and participant code may still identify a walk.",
-      trial.mode === "demo" ? "All readings and routes in this archive are synthetic." : "BPM values come from original Watch samples.",
+      trial.mode === "demo" ? "All readings and routes in this archive are synthetic." :
+        trial.mode === "gps" ? "This GPS-only test contains no heart-rate measurements." : "BPM values come from original Watch samples.",
       "Empty CSV fields and JSON null represent missing or excluded values. Raw traces are preserved in the full export.",
       "UTC timestamps use milliseconds. Positions use decimal degrees, distance uses meters, and signed grade uses percent in analysis CSVs.",
       "BPM is observed. Interpolation refers to location/distance, when both surrounding good fixes are within 10 seconds and clock uncertainty passes policy.",
@@ -81,17 +83,29 @@ export async function exportWalk(walk: Walk, shareCoordinates: boolean, lagSecon
   files["manifest.json"] = json({ protocol_version: version, schema_version: 1, app_version: "0.1.0",
     timezone: shareCoordinates ? trial.timezone : null, mode: trial.mode, exact_locations: shareCoordinates,
     sha256: Object.fromEntries(hashes) });
-  const folder = new Directory(Paths.cache, `walking-export-${randomUUID()}`);
-  folder.create();
-  try {
-    const bundle = `trial_${trial.id}`;
-    const file = new File(folder, bundle + ".zip");
-    file.write(zipSync(Object.fromEntries(Object.entries(files).map(([name, content]) =>
-      [`${bundle}/${name}`, strToU8(content)]))));
-    await Sharing.shareAsync(file.uri, { mimeType: "application/zip", UTI: "public.zip", dialogTitle: "Share trial export" });
-    await (await database()).runAsync("INSERT INTO analysis_runs VALUES (?,?,?,?)",
-      randomUUID(), trial.id, Date.now(), json(summary));
-  } finally {
-    folder.delete();
+  const bundle = `trial_${trial.id}`;
+  const zip = zipSync(Object.fromEntries(Object.entries(files).map(([name, content]) =>
+    [`${bundle}/${name}`, strToU8(content)])));
+  if (Platform.OS === "web") {
+    const url = URL.createObjectURL(new Blob([new Uint8Array(zip)], { type: "application/zip" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = bundle + ".zip";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } else {
+    const folder = new Directory(Paths.cache, `walking-export-${randomUUID()}`);
+    folder.create();
+    try {
+      const file = new File(folder, bundle + ".zip");
+      file.write(zip);
+      await Sharing.shareAsync(file.uri, { mimeType: "application/zip", UTI: "public.zip", dialogTitle: "Share trial export" });
+    } finally {
+      folder.delete();
+    }
   }
+  await write(await database(), async (tx) => {
+    await tx.runAsync("INSERT INTO analysis_runs VALUES (?,?,?,?)",
+      randomUUID(), trial.id, Date.now(), json(summary));
+  });
 }

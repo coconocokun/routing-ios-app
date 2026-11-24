@@ -1,5 +1,6 @@
 import { CryptoDigestAlgorithm, digestStringAsync, randomUUID } from "expo-crypto";
 import { requireOptionalNativeModule } from "expo";
+import { Platform } from "react-native";
 import { addEvent, database, getTrial, heartRate, write, type Trial } from "./db.ts";
 import { canonicalSamples, epoch, manifestMatches, readBatch, readEnvelope, readManifest, uuid, version } from "./protocol.ts";
 
@@ -11,9 +12,13 @@ type Native = {
   send: (json: string, durable: boolean) => Promise<boolean>;
   probe: (json: string) => Promise<number>;
 };
-const bridge = requireOptionalNativeModule<Native>("WalkConnectivity");
+const bridge = Platform.OS === "ios" ? requireOptionalNativeModule<Native>("WalkConnectivity") : null;
 const offline = { supported: false, activated: false, paired: false, installed: false, reachable: false };
 export const watchStatus = () => bridge?.status() ?? offline;
+export function watchAvailable() {
+  const { activated, paired, installed } = watchStatus();
+  return activated && paired && installed;
+}
 
 function phoneMessage(type: string, id: string, payload: Record<string, unknown>) {
   return JSON.stringify({ protocol_version: version, message_id: randomUUID(), type, trial_id: id,
@@ -204,13 +209,18 @@ export async function finishTrial(trial: Trial, abandoned = false) {
   const db = await database();
   const now = Date.now();
   await write(db, async (tx) => {
-    const next = abandoned ? "abandoned" : trial.mode === "paired" ? "sync_pending" : trial.mode === "demo" ? "complete" : "incomplete";
-    const reason = abandoned ? "Ended by the participant before completion." :
-      trial.mode === "gps" ? "GPS-only engineering test. No Watch measurements requested." : trial.reason;
+    let reason = abandoned ? "Ended by the participant before completion." : trial.reason;
+    if (!abandoned && trial.mode === "gps" && !reason) {
+      const interruption = await tx.getFirstAsync("SELECT 1 FROM events WHERE trial_id = ? AND type IN ('location_error','recovered') LIMIT 1", trial.id);
+      const gps = await tx.getFirstAsync("SELECT 1 FROM gps_samples WHERE trial_id = ? AND horizontal_accuracy_m BETWEEN 0 AND 30 LIMIT 1", trial.id);
+      reason = interruption ? "Location recording was interrupted." : gps ? null : "No usable location data.";
+    }
+    const next = abandoned ? "abandoned" : trial.mode === "paired" ? "sync_pending" : reason ? "incomplete" : "complete";
     const changed = await tx.runAsync(`UPDATE trials SET phone_stopped_at_ms = ?, status = ?, reason = COALESCE(reason,?)
       WHERE id = ? AND status IN ('preparing','recording','paused')`, now, next, reason, trial.id);
     if (!changed.changes) return;
     await addEvent(tx, trial.id, "stop", now);
+    if (trial.mode !== "paired") return;
     try {
       await reconcile(tx, trial.id);
     } catch (error) {

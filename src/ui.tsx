@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 export const palette = { paper: "#f4f5ed", card: "#fffef8", ink: "#142c28", quiet: "#4e6258",
   green: "#165b4a", mint: "#c9edd9", line: "#d6ded0", amber: "#824914", warn: "#f9eacd" };
@@ -16,6 +16,7 @@ export function Notice({ children }: { children: ReactNode }) {
   return <Text accessibilityLiveRegion="polite" style={styles.notice}>{children}</Text>;
 }
 export function MapAttribution() {
+  if (Platform.OS === "web") return null;
   return <Text accessibilityRole="link" style={styles.attribution}
     onPress={() => void Linking.openURL("https://www.openstreetmap.org/copyright")}>© OpenStreetMap contributors</Text>;
 }
@@ -33,6 +34,13 @@ export function Metric({ label, value }: { label: string; value: string }) {
   </View>;
 }
 export const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+export function confirmAction(title: string, detail: string, cancel: string, action: string, onConfirm: () => void) {
+  if (Platform.OS === "web") {
+    if (window.confirm(`${title}\n\n${detail}`)) onConfirm();
+    return;
+  }
+  Alert.alert(title, detail, [{ text: cancel, style: "cancel" }, { text: action, style: "destructive", onPress: onConfirm }]);
+}
 export const displayStatus = (status: string) => ({
   preparing: "Preparing", recording: "Recording", paused: "Paused", sync_pending: "Sync pending",
   complete: "Complete", incomplete: "Incomplete", abandoned: "Abandoned",

@@ -1,20 +1,19 @@
 import { router } from "expo-router";
-import * as Location from "expo-location";
 import { useEffect, useRef, useState } from "react";
-import { Switch, TextInput, View } from "react-native";
-import MapView, { Marker, Polyline, type MapPressEvent } from "react-native-maps";
+import { Platform, Switch, TextInput, View } from "react-native";
 import { createTrial } from "../src/db";
 import { saveDemo } from "../src/demo";
-import { beginGps, requestLocation } from "../src/recording";
+import MapView, { Marker, Polyline, type MapHandle, type MapPressEvent } from "../src/map";
+import { beginGps, currentLocation, requestLocation } from "../src/recording";
 import { demoRoutes, routeColors, type Point, type RouteSet } from "../src/routes";
 import { requestMapPaths, requestRoutes } from "../src/routing";
 import { Body, Button, Card, Label, MapAttribution, Metric, Notice, Screen, Title, message, palette, styles } from "../src/ui";
-import { command, watchStatus } from "../src/watch";
+import { command, watchAvailable } from "../src/watch";
 
 const initial = { latitude: 37.772, longitude: -122.482 };
 
 export default function Plan() {
-  const map = useRef<MapView>(null);
+  const map = useRef<MapHandle>(null);
   const [origin, setOrigin] = useState<Point>();
   const [destination, setDestination] = useState<Point>();
   const [routes, setRoutes] = useState<RouteSet>();
@@ -22,7 +21,8 @@ export default function Plan() {
   const [id, setId] = useState("");
   const [title, setTitle] = useState("");
   const [participant, setParticipant] = useState("");
-  const [gpsOnly, setGpsOnly] = useState(false);
+  const [useWatch, setUseWatch] = useState(false);
+  const [canPair, setCanPair] = useState(watchAvailable);
   const [permitted, setPermitted] = useState(false);
   const [working, setWorking] = useState(false);
   const [problem, setProblem] = useState("");
@@ -35,6 +35,14 @@ export default function Plan() {
       if (active) setMapPaths(paths);
     });
     return () => { active = false; };
+  }, [routes]);
+
+  useEffect(() => {
+    if (!routes || routes.demo || Platform.OS === "web") return;
+    const refresh = () => setCanPair(watchAvailable());
+    refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => clearInterval(timer);
   }, [routes]);
 
   const run = async (work: () => Promise<void>) => {
@@ -54,8 +62,7 @@ export default function Plan() {
     else setDestination(nativeEvent.coordinate);
   };
   const currentPosition = () => run(async () => {
-    if (!(await Location.requestForegroundPermissionsAsync()).granted) throw new Error("Allow location access to use your current position.");
-    const fix = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+    const fix = await currentLocation();
     setOrigin(fix.coords); setRoutes(undefined); setMapPaths(undefined);
     map.current?.animateToRegion({ ...fix.coords, latitudeDelta: 0.015, longitudeDelta: 0.015 });
   });
@@ -68,15 +75,14 @@ export default function Plan() {
       return;
     }
     if (!permitted) throw new Error("Confirm that this walk and its data collection are authorized.");
-    if (!gpsOnly && !watchStatus().installed) throw new Error("Install the companion Watch app or explicitly select a GPS-only test.");
+    if (useWatch && !watchAvailable()) throw new Error("The Watch app is unavailable. Reconnect it or turn off Watch recording.");
     await requestLocation();
-    const trialId = await createTrial(route, routes, name, participant, gpsOnly ? "gps" : "paired");
+    const trialId = await createTrial(route, routes, name, participant, useWatch ? "paired" : "gps");
     try {
-      if (gpsOnly) await beginGps(trialId);
-      else {
+      if (useWatch) {
         await command("PREPARE", trialId, { route_id: route.id });
         await command("START", trialId, { title: name });
-      }
+      } else await beginGps(trialId);
     } finally { router.replace({ pathname: "/navigate", params: { id: trialId } }); }
   });
 
@@ -135,15 +141,18 @@ export default function Plan() {
             onChangeText={setParticipant} autoCapitalize="characters" placeholder="For example, P03" maxLength={24} />
           <View style={styles.row}><View style={{ flex: 1 }}><Body>This walk and its data collection are authorized.</Body></View>
             <Switch accessibilityLabel="This walk and its data collection are authorized" value={permitted} onValueChange={setPermitted} /></View>
-          <View style={styles.row}><View style={{ flex: 1 }}><Body>GPS-only engineering test</Body></View>
-            <Switch accessibilityLabel="GPS-only engineering test" value={gpsOnly} onValueChange={setGpsOnly} /></View>
+          {(canPair || useWatch) && <View style={styles.row}>
+            <View style={{ flex: 1 }}><Body>Record heart rate with Apple Watch</Body></View>
+            <Switch accessibilityLabel="Record heart rate with Apple Watch" value={useWatch} onValueChange={setUseWatch} />
+          </View>}
+          {!useWatch && <Body>{Platform.OS === "web" ? "GPS-only test. Keep this tab open and visible while recording." : "GPS-only engineering test."}</Body>}
         </>}
-        <Button title={working ? "Preparing…" : routes.demo ? "Save and review demo" : gpsOnly ? "Start GPS test" : "Send start to Watch"}
+        <Button title={working ? "Preparing…" : routes.demo ? "Save and review demo" : useWatch ? "Send start to Watch" : "Start GPS test"}
           disabled={working || (!routes.demo && !permitted)} onPress={prepare} />
       </Card>
     </>}
     {(origin || destination) && <Button title="Clear endpoints" disabled={working} secondary onPress={() => {
-      setOrigin(undefined); setDestination(undefined); setRoutes(undefined); setMapPaths(undefined); setId(""); setProblem("");
+      setOrigin(undefined); setDestination(undefined); setRoutes(undefined); setMapPaths(undefined); setId(""); setProblem(""); setUseWatch(false);
     }} />}
   </Screen>;
 }

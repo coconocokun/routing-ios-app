@@ -1,13 +1,14 @@
 import "../src/recording";
 import { Stack } from "expo-router";
 import { useEffect } from "react";
-import { AppState } from "react-native";
+import { AppState, Platform } from "react-native";
 import { database } from "../src/db";
 import { command, drainWatch, watchStatus } from "../src/watch";
 import { palette } from "../src/ui";
 
 export default function Layout() {
   useEffect(() => {
+    if (Platform.OS !== "ios") return;
     let busy = false;
     let lastRepair = 0;
     const update = async () => {

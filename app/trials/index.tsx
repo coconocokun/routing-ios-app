@@ -1,6 +1,6 @@
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
-import { TextInput, View } from "react-native";
+import { Platform, TextInput, View } from "react-native";
 import { database, type Trial } from "../../src/db";
 import { Body, Button, Card, Label, Notice, Screen, Title, displayStatus, duration, message, styles } from "../../src/ui";
 import type { Route } from "../../src/routes";
@@ -31,7 +31,7 @@ export default function TrialHistory() {
     <Title>Previous trials</Title>
     <TextInput accessibilityLabel="Find a trial" placeholder="Find a trial" style={styles.input} value={query} onChangeText={setQuery} />
     <View style={styles.row}>
-      <Button title={pending ? "Show all trials" : "Show pending sync"} secondary onPress={() => setPending(!pending)} />
+      {Platform.OS === "ios" && <Button title={pending ? "Show all trials" : "Show pending sync"} secondary onPress={() => setPending(!pending)} />}
       <Button title={newest ? "Newest first" : "Oldest first"} secondary onPress={() => setNewest(!newest)} />
     </View>
     {problem ? <Notice>{problem}</Notice> : null}
@@ -41,7 +41,7 @@ export default function TrialHistory() {
         return <Card key={row.id}>
           <Label>{row.title}</Label>
           <Body>{new Date(row.created_at_ms).toLocaleString()} · {displayStatus(row.status)}</Body>
-          <Body>{row.mode === "demo" ? "Synthetic demo · " : ""}{route.labels.join(" · ")}
+          <Body>{row.mode === "demo" ? "Synthetic demo · " : row.mode === "gps" ? "GPS-only test · " : ""}{route.labels.join(" · ")}
             {row.phone_started_at_ms && row.phone_stopped_at_ms ? ` · ${duration(row.phone_stopped_at_ms - row.phone_started_at_ms)}` : ""}</Body>
           <Button title={["preparing", "recording", "paused"].includes(row.status) ? "Open current walk" : "Review"}
             onPress={() => router.push({ pathname: ["preparing", "recording", "paused"].includes(row.status) ? "/navigate" : "/trials/[id]",

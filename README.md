@@ -1,6 +1,19 @@
-# Walking Study for iPhone
+# Walking Study
 
-Expo SDK 58 development project for planning walks, collecting background GPS, importing Watch observations and reviewing local trials. The app can save a clearly marked synthetic trial from **Plan a new walk → Explore synthetic routes**. The demo exercises route comparison, replay, HR maps, charts and ZIP export without requesting recording permissions.
+Expo SDK 58 development project for planning walks, recording GPS and reviewing local trials. The iPhone build supports background GPS and optional heart-rate recording with Apple Watch.
+
+## Test in a browser
+
+Use Node 22.13 or later.
+
+```sh
+npm ci
+npm run web
+```
+
+Open the localhost URL printed by Expo. Choose **Plan a new walk → Explore synthetic routes** to test route comparison, trial history, replay, HR charts and ZIP downloads without granting location access. Trials are saved in browser storage for that origin.
+
+For a live GPS-only test, choose endpoints, select a walking route, authorize recording, and select **Start GPS test**. Grant location access when prompted and keep the tab open and visible during the walk. Use localhost or HTTPS for browser location access. Live route planning requires internet access and routing endpoints that allow browser requests.
 
 ## Build on macOS
 
@@ -14,6 +27,8 @@ npm run ios -- --device
 
 The build scripts stage the Watch source into `targets/walk` and generate an embedded `WalkingStudyWatch` target. If Xcode prompts for signing, select the same team for the phone and Watch targets. Use the iPhone Watch app to install the companion if it does not install automatically. For a subsequent development session, start Metro with `npm start`. An Expo development build supplies the local WatchConnectivity module and background GPS capabilities.
 
+GPS-only tests are the default. When the paired companion is installed, turn on **Record heart rate with Apple Watch** during setup to run a paired trial.
+
 The development bundle IDs are `org.walkingstudy.phone` and `org.walkingstudy.phone.watchkitapp`. If your team needs different IDs, change the phone ID in `app.config.js` and the matching value in the Watch source `Info.plist` before regenerating the project.
 
 ## Routing and map data
@@ -24,15 +39,16 @@ Valhalla receives the selected endpoints and points along proposed routes for el
 
 ## Data handling
 
-Trials and measurements are stored in SQLite in the app sandbox. The paired Watch uses a durable outbox and a verified final manifest. The phone processes its native inbox when the app is active. Grade estimates use the selected DEM-backed corridor where the observed trace matches it. Deviations without a reliable match display missing grade.
+Trials and measurements are stored in SQLite on the iPhone or in the browser. The paired Watch uses a durable outbox and a verified final manifest. The phone processes its native inbox when the app is active. Grade estimates use the selected DEM-backed corridor where the observed trace matches it. Deviations without a reliable match display missing grade.
 
-The full ZIP contains exact coordinates and timestamps. The reduced ZIP omits exact locations, absolute timestamps and raw identifiers. It still retains enough measurement detail that privacy depends on the study’s sharing rules. Deletion removes the app’s records and queues a Watch deletion. Apple Health workouts and already shared copies are managed separately.
+The full ZIP contains exact coordinates and timestamps. The reduced ZIP omits exact locations, absolute timestamps and raw identifiers. It still retains enough measurement detail that privacy depends on the study’s sharing rules. Deletion removes the app’s records and queues a Watch deletion for paired trials. Apple Health workouts and already shared copies are managed separately.
 
 ## Verification
 
 ```sh
 npm run typecheck
 npm test
+npx expo export --platform web
 npx expo export --platform ios --no-bytecode
 ```
 

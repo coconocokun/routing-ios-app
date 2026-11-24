@@ -1,6 +1,7 @@
 import { requireOptionalNativeModule } from "expo";
 import { randomUUID } from "expo-crypto";
 import { openDatabaseAsync } from "expo-sqlite";
+import { Platform } from "react-native";
 import type { Event, GPS } from "./analysis.ts";
 import type { HrSample } from "./protocol.ts";
 import type { Route, RouteSet } from "./routes.ts";
@@ -73,7 +74,9 @@ export function database() {
 type DB = Awaited<ReturnType<typeof database>>;
 let writes: Promise<void> = Promise.resolve();
 export function write(db: DB, operation: (tx: DB) => Promise<void>) {
-  const next = writes.then(() => db.withExclusiveTransactionAsync(operation));
+  const next = writes.then(() => Platform.OS === "web"
+    ? db.withTransactionAsync(() => operation(db))
+    : db.withExclusiveTransactionAsync(operation));
   writes = next.catch(() => {});
   return next;
 }

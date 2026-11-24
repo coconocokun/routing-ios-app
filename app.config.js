@@ -3,7 +3,7 @@ module.exports = {
   slug: "walking-study-ios",
   version: "0.1.0",
   scheme: "walking-study",
-  platforms: ["ios"],
+  platforms: ["ios", "web"],
   orientation: "portrait",
   ios: {
     bundleIdentifier: "org.walkingstudy.phone",

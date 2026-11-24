@@ -1,18 +1,18 @@
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Alert, AppState, View } from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
+import { AppState, Platform, View } from "react-native";
 import { analyze, walkDuration } from "../src/analysis";
 import { addEvent, database, getTrial, readTrial, write } from "../src/db";
+import MapView, { Marker, Polyline, type MapHandle } from "../src/map";
 import { beginGps, endGps, gpsRunning, nearDestination, requestLocation } from "../src/recording";
 import { project, routeColors } from "../src/routes";
-import { Body, Button, Card, Label, MapAttribution, Metric, Notice, Screen, Title, displayStatus, duration, message, palette, styles } from "../src/ui";
+import { Body, Button, Card, Label, MapAttribution, Metric, Notice, Screen, Title, confirmAction, displayStatus, duration, message, palette, styles } from "../src/ui";
 import { checkClock, command, drainWatch, finishTrial, watchStatus } from "../src/watch";
 
 type Walk = NonNullable<Awaited<ReturnType<typeof readTrial>>>;
 export default function Navigate() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const map = useRef<MapView>(null);
+  const map = useRef<MapHandle>(null);
   const clock = useRef(0);
   const [walk, setWalk] = useState<Walk | null>();
   const [now, setNow] = useState(Date.now());
@@ -142,14 +142,15 @@ export default function Navigate() {
     <Card>
       <View style={styles.row}><Metric label="active time" value={duration(elapsed.active)} />
         <Metric label="observed distance" value={`${Math.round(analysis?.summary.meters ?? 0)} m`} /></View>
-      {open && trial.phone_started_at_ms && !last && <Body>Waiting for a usable iPhone location fix.</Body>}
+      {open && trial.phone_started_at_ms && !last && <Body>Waiting for a usable location fix.</Body>}
       {last && !paused && <Body>Next waypoint near {next.latitude.toFixed(5)}, {next.longitude.toFixed(5)}</Body>}
-      <Label>Apple Watch</Label>
-      <Body>{trial.mode === "gps" ? "GPS-only test" : trial.watch_stopped_at_ms ? "Workout ended" :
-        watchEvent?.type === "paused" ? "Paused on Watch" : trial.watch_started_at_ms ?
-          (watch.reachable ? "Workout started" : "Workout started · link unavailable") :
-          "Waiting for confirmation on Watch"}</Body>
-      {trial.mode === "paired" && <Body>{walk.hr.length} Watch samples imported</Body>}
+      {trial.mode === "gps" && <Body>{Platform.OS === "web" && open ? "GPS-only test. Keep this tab open and visible." : "GPS-only test"}</Body>}
+      {trial.mode === "paired" && <>
+        <Label>Apple Watch</Label>
+        <Body>{trial.watch_stopped_at_ms ? "Workout ended" : watchEvent?.type === "paused" ? "Paused on Watch" : trial.watch_started_at_ms ?
+          (watch.reachable ? "Workout started" : "Workout started · link unavailable") : "Waiting for confirmation on Watch"}</Body>
+        <Body>{walk.hr.length} Watch samples imported</Body>
+      </>}
     </Card>
     {deviations.at(-1)?.type === "off_route" && <Notice>You appear to be off the selected route.</Notice>}
     {last && open && nearDestination(last.point, route) && <Notice>Destination nearby. Finish when you’re ready.</Notice>}
@@ -161,9 +162,8 @@ export default function Navigate() {
     {open ? <>
       {trial.phone_started_at_ms && !recover && <Button title={paused ? "Resume walk" : "Pause walk"} onPress={changePause} secondary disabled={busy} />}
       <Button title="Finish walk" onPress={() => void close(false)} disabled={busy || !trial.phone_started_at_ms} />
-      <Button title="Abandon walk" secondary disabled={busy} onPress={() => Alert.alert("Abandon this walk?", "Recorded samples will remain available in trial history.", [
-        { text: "Keep walking", style: "cancel" }, { text: "Abandon walk", style: "destructive", onPress: () => void close(true) },
-      ])} />
+      <Button title="Abandon walk" secondary disabled={busy} onPress={() => confirmAction("Abandon this walk?",
+        "Recorded samples will remain available in trial history.", "Keep walking", "Abandon walk", () => void close(true))} />
     </> : <Button title="Review trial" onPress={() => router.replace({ pathname: "/trials/[id]", params: { id } })} />}
   </Screen>;
 }
