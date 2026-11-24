@@ -11,9 +11,9 @@ npm ci
 npm run web
 ```
 
-Open the localhost URL printed by Expo. Choose **Plan a new walk → Explore synthetic routes** to test route comparison, trial history, replay, HR charts and ZIP downloads without granting location access. Trials are saved in browser storage for that origin.
+Open the localhost URL printed by Expo. Choose **Plan a new walk → Explore demo routes** to test route comparison, trial history, replay, HR charts and ZIP downloads without granting location access. Trials are saved in browser storage for that origin.
 
-For a live GPS-only test, choose endpoints, select a walking route, authorize recording, and select **Start GPS test**. Grant location access when prompted and keep the tab open and visible during the walk. Use localhost or HTTPS for browser location access. Live route planning requires internet access and routing endpoints that allow browser requests.
+For a live GPS-only test, set the start and destination by searching or tapping the map. The start also supports **Use current location**. Once the routes appear, select one in the bottom sheet, authorize recording, enter an optional trial label, and select **Start navigation**. Grant location access when prompted and keep the tab open and visible during the walk. Use localhost or HTTPS for browser location access. Live planning requires internet access and providers that allow browser requests.
 
 ## Build on macOS
 
@@ -33,7 +33,7 @@ The development bundle IDs are `org.walkingstudy.phone` and `org.walkingstudy.ph
 
 ## Routing and map data
 
-**Find walking routes** uses the public Valhalla server for pedestrian routes and elevation and the public Overpass API for OSM paths near the endpoints. Both endpoints are built in. To use other hosts, override `EXPO_PUBLIC_VALHALLA_URL` or `EXPO_PUBLIC_OVERPASS_URL` in `.env.local` using [.env.example](.env.example).
+After both endpoints are selected, the planner uses the public Valhalla server for pedestrian routes and elevation and the public Overpass API for OSM paths near the endpoints. Place search uses the public Photon demo server with debounced queries and an approximate map center rounded to 0.1 degrees. To use other hosts, set `EXPO_PUBLIC_VALHALLA_URL`, `EXPO_PUBLIC_OVERPASS_URL` or `EXPO_PUBLIC_PHOTON_URL` in `.env.local`. See [.env.example](.env.example) and [Photon’s demo server usage](https://github.com/komoot/photon#demo-server).
 
 Valhalla receives the selected endpoints and points along proposed routes for elevation lookup. Overpass receives the endpoints for the path overlay. The phone applies its route quality checks and signed Minetti scoring locally. Labels compare the usable candidates returned for that request. See the [iOS development plan](IOS_APP_DEVELOPMENT_PLAN.md#4-routing--predicted-walking-cost-algorithm) for the request flow, scoring rules and provider limits.
 

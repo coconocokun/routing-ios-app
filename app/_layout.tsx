@@ -37,7 +37,7 @@ export default function Layout() {
   return <Stack screenOptions={{ headerTintColor: palette.green, headerStyle: { backgroundColor: palette.paper },
     headerShadowVisible: false, contentStyle: { backgroundColor: palette.paper } }}>
     <Stack.Screen name="index" options={{ title: "Walking Study" }} />
-    <Stack.Screen name="plan" options={{ title: "Plan a walk" }} />
+    <Stack.Screen name="plan" options={{ title: "Plan a walk", headerShown: false }} />
     <Stack.Screen name="navigate" options={{ title: "Current walk", gestureEnabled: false }} />
     <Stack.Screen name="trials/index" options={{ title: "Trials" }} />
     <Stack.Screen name="trials/[id]" options={{ title: "Review trial" }} />

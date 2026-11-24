@@ -2,6 +2,7 @@ import { deepEqual, equal, match, ok, rejects, throws } from "node:assert/strict
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { analyze, walkDuration } from "../src/analysis.ts";
+import { searchPlaces } from "../src/places.ts";
 import { canonicalSamples, manifestMatches, readBatch, readEnvelope, readManifest } from "../src/protocol.ts";
 import { demoRoutes, distance, scoreRoutes, walkingCost } from "../src/routes.ts";
 import { requestMapPaths, requestRoutes } from "../src/routing.ts";
@@ -63,6 +64,27 @@ const planStart = { latitude: 0, longitude: 0 };
 const planEnd = { latitude: 0, longitude: 0.001 };
 const directTrip = { legs: [{ shape: "???g^?g^" }] };
 const alternateTrip = { legs: [{ shape: "??sNg^rNg^" }] };
+
+test("place search keeps valid results and sends a rounded bias center", async (t) => {
+  const { signal } = new AbortController();
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    const { searchParams } = new URL(url);
+    equal(options.signal, signal);
+    equal(searchParams.get("q"), "공원 & trail");
+    equal(searchParams.get("lat"), "37.8");
+    equal(searchParams.get("lon"), "-122.5");
+    return Response.json({ features: [
+      { geometry: { type: "Point", coordinates: [-122.482, 37.772] },
+        properties: { name: "Example Park", street: "Test Street", housenumber: "12", city: "Example City" } },
+      { geometry: { type: "Point", coordinates: [-122.48, 91] }, properties: { name: "Invalid point" } },
+      { geometry: { type: "Point", coordinates: [-122.47, 37.77] }, properties: { city: "Example City" } },
+    ] });
+  });
+  deepEqual(await searchPlaces("공원 & trail", { latitude: 37.772, longitude: -122.482 }, signal), [
+    { point: { latitude: 37.772, longitude: -122.482 }, name: "Example Park", detail: "12 Test Street, Example City" },
+    { point: { latitude: 37.77, longitude: -122.47 }, name: "Example City", detail: "" },
+  ]);
+});
 
 test("Valhalla pedestrian alternatives retain bends and are compared with sampled elevation", async (t) => {
   const fetch = t.mock.method(globalThis, "fetch", async (url, { body, headers, method }) => {

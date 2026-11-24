@@ -62,14 +62,14 @@ repo/
 - Indicate whether location permission is granted, Watch app is installed, and watch is reachable; these are informational only until recording starts.
 
 ### Plan and compare
-- Select origin, destination and requested walk type; preserve same endpoints across routes.
+- Set the start and destination by tapping the full-screen map or using the search fields. The start also supports current location. Load routes automatically after both endpoints are confirmed.
 - Render up to three distinct paths with the `Shortest`, `Lowest J/kg/m`, and `Balanced` labels. Labels compare the usable Valhalla candidates for this request.
-- On each card: distance (km), predicted elapsed time (using a documented walking-speed assumption), gain/loss (m), mean metabolic cost (J/kg/m), total predicted cost (J/kg), and warnings (steep grade, incomplete elevation, extra detour).
+- Compare distance and estimated time in the bottom sheet, with gain and loss, mean and total predicted cost, maximum grade and warnings available for the selected route.
 - Tap a route to highlight it. Use Valhalla's pedestrian access rules and exclude routes reported to include ferries. Verify study corridors in the field before participant use.
 - If 2 methods produce the same geometry, mark that they coincide; show fewer than 3 truly different choices rather than inventing a route.
 
 ### Preflight and recording
-- Enter **trial name**, optionally anonymized **participant code**. Show route summary, battery/Watch link and permissions status.
+- Enter the optional **trial label** above **Start navigation**. The expanded route details include the optional participant code.
 - Start behavior: allocate `trial_id`, persist `preparing`, send `START` to Watch, await Watch `STARTED` or explicitly show “watch not recording” warning. Only transition to scientifically valid combined recording once both GPS and Watch streams are confirmed. If Watch unavailable, allow an explicitly flagged **GPS-only engineering test**, not a valid HR study trial.
 - Active view: selected route and actual trace (different styles), position dot, elapsed active time, covered distance, next turn, Watch recording state, HR latest sample + age indicator (optional), **Finish / Pause**.
 - Navigation recalculations are excluded from experiment by default; record off-route events and flag trials rather than silently replacing the treatment route.
@@ -120,9 +120,10 @@ repo/
 |---|---|---|
 | `EXPO_PUBLIC_VALHALLA_URL` | `https://valhalla1.openstreetmap.de/` | POST `/route` and `/height` with the app's `X-Client-Id`. |
 | `EXPO_PUBLIC_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | POST one Overpass QL query for footways, paths, pedestrian ways and steps within 200 m of either endpoint. Identify the app with its `User-Agent`. |
+| `EXPO_PUBLIC_PHOTON_URL` | `https://photon.komoot.io` | GET `/api/` for place and address suggestions, with a search term and an approximate map center. |
 
-- The public endpoints are enabled by default. Use `.env.local` to override either URL, for example with a study deployment that pins the graph and DEM revisions.
-- Requests run when the user chooses **Find walking routes**. The planner sends the selected endpoints and terrain sample coordinates to Valhalla. After showing the routes, it sends the endpoints to Overpass for the overlay. GPS recordings, Watch readings and trial identifiers stay local.
+- The public endpoints are enabled by default. Use `.env.local` to override provider URLs, for example with a study deployment that pins the graph and DEM revisions.
+- After both endpoints are confirmed, the planner sends them and the terrain sample coordinates to Valhalla. It sends the confirmed endpoints to Overpass for the path overlay. Typing a place search sends the term and an approximate map center to Photon. GPS recordings, Watch readings and trial identifiers stay local.
 - Keep Overpass requests small and wait at least 30 seconds after an Overpass HTTP 429. If Overpass is unavailable, show the route choices with the basemap. If Valhalla routing or elevation is unavailable, show the error and keep the synthetic demo available.
 - Public services can change their data and limits. Review the operators' fair-use requirements before distributing the app with these endpoints.
 - Persist the selected route and candidate metrics locally before the walk so navigation can use the saved geometry without another route request.
@@ -168,7 +169,7 @@ Every chart must allow the user to inspect session metadata (route category/vers
 - **Watch integration:** start/stop message acknowledgements, paired vs unreachable status, delayed delivery after reconnect, idempotent duplicate sample ingestion.
 - **Persistence:** kill/restart app during GPS logging, then recover; rename/delete and confirm all child data deleted; export and parse back to equivalent samples.
 - **Maps/charts:** 2,000+ location samples; HR gap; crossing/backtrack path; pause/resume; daylight saving/time zone independent UTC processing; export matches displayed statistics.
-- **Privacy.** Confirm that online planning sends only the selected endpoints and route elevation sample coordinates. Confirm users can delete study records on the device.
+- **Privacy.** Confirm that place search sends only the query and approximate map center, and that routing sends only the selected endpoints and route elevation sample coordinates. Confirm users can delete study records on the device.
 
 ## 9. Deliverable checklist
 

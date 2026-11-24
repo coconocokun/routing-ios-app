@@ -6,7 +6,8 @@ import type { MapPressEvent, MapViewProps, MapMarkerProps, MapPolylineProps, Reg
 import type { Point } from "./routes";
 
 type MapHandle = Pick<MapView, "animateToRegion" | "fitToCoordinates">;
-type Props = Pick<MapViewProps, "children" | "initialRegion" | "region" | "onMapReady" | "onPress" | "style">;
+type Props = Pick<MapViewProps, "children" | "initialRegion" | "region" | "onMapReady" | "onPress" | "style" |
+  "onRegionChangeComplete" | "zoomControlEnabled" | "legalLabelInsets">;
 const MapContext = createContext<L.Map | null>(null);
 const toLatLng = ({ latitude, longitude }: Point): L.LatLngTuple => [latitude, longitude];
 
@@ -15,16 +16,18 @@ function bounds({ latitude, longitude, latitudeDelta, longitudeDelta }: Region):
     [latitude + latitudeDelta / 2, longitude + longitudeDelta / 2]];
 }
 
-export default forwardRef<MapHandle, Props>(function BrowserMap({ children, initialRegion, region, onMapReady, onPress }, ref) {
+export default forwardRef<MapHandle, Props>(function BrowserMap({ children, initialRegion, region, onMapReady, onPress,
+  onRegionChangeComplete, zoomControlEnabled, legalLabelInsets }, ref) {
   const element = useRef<HTMLDivElement>(null);
   const initial = useRef(initialRegion);
+  const zoomControl = useRef(zoomControlEnabled);
   const [map, setMap] = useState<L.Map | null>(null);
   const ready = useRef(onMapReady);
   ready.current = onMapReady;
 
   useEffect(() => {
     if (!element.current) return;
-    const view = L.map(element.current, { maxZoom: 19, zoomAnimation: false });
+    const view = L.map(element.current, { maxZoom: 19, zoomAnimation: false, zoomControl: zoomControl.current });
     if (initial.current) view.fitBounds(bounds(initial.current), { animate: false });
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
@@ -34,6 +37,12 @@ export default forwardRef<MapHandle, Props>(function BrowserMap({ children, init
     setMap(view);
     return () => { resize.disconnect(); view.stop(); view.remove(); };
   }, []);
+
+  const attributionInset = legalLabelInsets?.bottom;
+  useEffect(() => {
+    const attribution = map?.attributionControl.getContainer();
+    if (attribution) attribution.style.marginBottom = attributionInset === undefined ? "" : `${attributionInset}px`;
+  }, [map, attributionInset]);
 
   useImperativeHandle(ref, () => ({
     animateToRegion: (next, duration) => map?.fitBounds(bounds(next), { animate: duration !== 0 }),
@@ -63,12 +72,24 @@ export default forwardRef<MapHandle, Props>(function BrowserMap({ children, init
   useEffect(() => {
     if (!map || !onPress) return;
     const tap = ({ latlng, containerPoint }: L.LeafletMouseEvent) => onPress({
-      nativeEvent: { coordinate: { latitude: latlng.lat, longitude: latlng.lng },
+      nativeEvent: { coordinate: { latitude: latlng.lat, longitude: latlng.wrap().lng },
         position: { x: containerPoint.x, y: containerPoint.y } },
     } as MapPressEvent);
     map.on("click", tap);
     return () => { map.off("click", tap); };
   }, [map, onPress]);
+
+  useEffect(() => {
+    if (!map || !onRegionChangeComplete) return;
+    const moved = () => {
+      const center = map.getCenter();
+      const extent = map.getBounds();
+      onRegionChangeComplete({ latitude: center.lat, longitude: center.wrap().lng,
+        latitudeDelta: extent.getNorth() - extent.getSouth(), longitudeDelta: extent.getEast() - extent.getWest() }, {});
+    };
+    map.on("moveend", moved);
+    return () => { map.off("moveend", moved); };
+  }, [map, onRegionChangeComplete]);
 
   return <MapContext.Provider value={map}>
     <div ref={element} aria-label="Walking map" style={{ width: "100%", height: "100%", background: "#e3eadf", isolation: "isolate" }} />
@@ -82,7 +103,7 @@ export function Marker({ coordinate, pinColor, title }: Pick<MapMarkerProps, "co
   useEffect(() => {
     if (!map) return;
     const marker = L.circleMarker([latitude, longitude], {
-      radius: 6, color: "white", weight: 2, fillColor: pinColor ?? "#b65035", fillOpacity: 1,
+      pane: "markerPane", radius: 6, color: "white", weight: 2, fillColor: pinColor ?? "#b65035", fillOpacity: 1,
     }).addTo(map);
     if (title) {
       const label = document.createElement("span");
