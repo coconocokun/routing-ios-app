@@ -37,12 +37,18 @@ export function analyze(gps: GPS[], hr: HrSample[], events: Event[], route: Rout
   let activeSeconds = 0;
   let offRoutePoints = 0;
   const offsets = [0];
-  for (const segment of route.segments) offsets.push(offsets[offsets.length - 1] + segment.meters);
-  const elevationAt = (along: number) => {
-    const i = route.segments.findIndex((_, index) => offsets[index + 1] >= along);
-    const s = route.segments[i < 0 ? route.segments.length - 1 : i];
-    return i < 0 ? s.elevationEnd :
-      s.elevationStart + (s.elevationEnd - s.elevationStart) * (along - offsets[i]) / s.meters;
+  const horizontalOffsets = [0];
+  for (const segment of route.segments) {
+    offsets.push(offsets[offsets.length - 1] + segment.meters);
+    horizontalOffsets.push(horizontalOffsets[horizontalOffsets.length - 1] + (segment.horizontalMeters ?? segment.meters));
+  }
+  const profileAt = (along: number) => {
+    const index = route.segments.findIndex((_, i) => offsets[i + 1] >= along);
+    const i = index < 0 ? route.segments.length - 1 : index;
+    const segment = route.segments[i];
+    const fraction = index < 0 ? 1 : (along - offsets[i]) / segment.meters;
+    return { height: segment.elevationStart + (segment.elevationEnd - segment.elevationStart) * fraction,
+      horizontal: horizontalOffsets[i] + (segment.horizontalMeters ?? segment.meters) * fraction };
   };
   for (const fix of [...gps].sort((a, b) => a.observed_at_ms - b.observed_at_ms || a.gps_seq - b.gps_seq)) {
     const point = { latitude: fix.lat, longitude: fix.lon };
@@ -73,8 +79,12 @@ export function analyze(gps: GPS[], hr: HrSample[], events: Event[], route: Rout
     if (offRoute) offRoutePoints++;
     const low = Math.max(0, match.along - policy.gradeWindowM / 2);
     const high = Math.min(route.meters, match.along + policy.gradeWindowM / 2);
-    const grade = match.separation <= policy.gradeMatchM && high - low >= policy.gradeWindowM / 2 ?
-      (elevationAt(high) - elevationAt(low)) / (high - low) : null;
+    let grade = null;
+    if (match.separation <= policy.gradeMatchM && high - low >= policy.gradeWindowM / 2) {
+      const start = profileAt(low);
+      const end = profileAt(high);
+      grade = (end.height - start.height) / (end.horizontal - start.horizontal);
+    }
     trace.push({ ...fix, point, meters, breakBefore, offRoute, grade });
   }
 

@@ -1,5 +1,5 @@
 export type Point = { latitude: number; longitude: number };
-export type RouteLabel = "Shortest" | "Lowest J/kg/m" | "Balanced";
+export type RouteLabel = "Shortest" | "Minimum energy" | "Grade constrained" | "Lowest J/kg/m" | "Balanced";
 export type Edge = {
   from: string;
   to: string;
@@ -11,7 +11,7 @@ export type Edge = {
   elevationQuality: "verified" | "missing";
 };
 export type Candidate = { id: string; edges: Edge[] };
-export type Segment = Edge & { meters: number; grade: number; cost: number };
+export type Segment = Edge & { meters: number; horizontalMeters?: number; grade: number; cost: number };
 export type Route = {
   id: string;
   labels: RouteLabel[];
@@ -32,17 +32,22 @@ export type RouteSet = {
   graphVersion: string;
   demVersion: string;
   algorithm: string;
-  parameters: typeof routeParameters;
+  parameters: typeof walkingParameters & { maxDetour: number; minDistinctFraction?: number;
+    minDownhillGrade?: number; maxUphillGrade?: number; elevationIntervalMeters?: number };
   candidates: Route[];
   choices: Route[];
+  warning?: string;
   demo: boolean;
 };
 
-export const routeParameters = {
-  maxDetour: 1.35, maxAbsoluteGrade: 0.25, metersPerSecond: 1.25,
-  minDistinctFraction: 0.1, maxSnapMeters: 60,
+const walkingParameters = { maxAbsoluteGrade: 0.25, metersPerSecond: 1.25, maxSnapMeters: 60 };
+export const routeParameters = { ...walkingParameters, maxDetour: 1.35, minDistinctFraction: 0.1 };
+export const studyRouteParameters = {
+  ...walkingParameters, maxDetour: 1.3, minDownhillGrade: -0.08, maxUphillGrade: 0.08,
+  elevationIntervalMeters: 30,
 };
-export const routeColors = { Shortest: "#2556be", "Lowest J/kg/m": "#007762", Balanced: "#a45817" };
+export const routeColors: Record<RouteLabel, string> = { Shortest: "#2556be", "Minimum energy": "#007762",
+  "Grade constrained": "#a45817", "Lowest J/kg/m": "#007762", Balanced: "#a45817" };
 
 export function validPoint(point: unknown): point is Point {
   if (!point || typeof point !== "object") return false;
@@ -64,6 +69,17 @@ export function distance(a: Point, b: Point) {
 export function walkingCost(grade: number) {
   return 280.5 * grade ** 5 - 58.7 * grade ** 4 - 76.8 * grade ** 3 +
     51.9 * grade ** 2 + 19.6 * grade + 2.5;
+}
+
+export function summarizeRoute(id: string, segments: Segment[]): Route {
+  const meters = segments.reduce((sum, segment) => sum + segment.meters, 0);
+  const total = segments.reduce((sum, segment) => sum + segment.cost * segment.meters, 0);
+  const gain = segments.reduce((sum, segment) => sum + Math.max(0, segment.elevationEnd - segment.elevationStart), 0);
+  const loss = segments.reduce((sum, segment) => sum + Math.max(0, segment.elevationStart - segment.elevationEnd), 0);
+  const maxGrade = segments.reduce((max, segment) => Math.max(max, Math.abs(segment.grade)), 0);
+  return { id, labels: [], segments, geometry: [segments[0].start, ...segments.map((segment) => segment.end)],
+    meters, total, mean: total / meters, gain, loss, maxGrade, minutes: meters / walkingParameters.metersPerSecond / 60,
+    warnings: maxGrade >= 0.12 ? ["Includes grade of at least 12%."] : [] };
 }
 
 export function project(point: Point, route: Route) {
@@ -96,7 +112,7 @@ export function scoreRoutes(
       !Array.isArray(input.candidates) || input.candidates.length > 50) {
     throw new Error("The route service returned invalid dataset metadata or candidates.");
   }
-  const { maxAbsoluteGrade, maxDetour, metersPerSecond, maxSnapMeters, minDistinctFraction } = routeParameters;
+  const { maxAbsoluteGrade, maxDetour, maxSnapMeters, minDistinctFraction } = routeParameters;
   const candidates: Route[] = [];
   const ids = new Set<string>();
   for (const candidate of input.candidates) {
@@ -123,17 +139,8 @@ export function scoreRoutes(
     if (segments.length !== candidate.edges.length ||
         distance(segments[0].start, origin) > maxSnapMeters ||
         distance(segments[segments.length - 1].end, destination) > maxSnapMeters) continue;
-    const meters = segments.reduce((sum, segment) => sum + segment.meters, 0);
-    const total = segments.reduce((sum, segment) => sum + segment.cost * segment.meters, 0);
-    const gain = segments.reduce((sum, segment) => sum + Math.max(0, segment.elevationEnd - segment.elevationStart), 0);
-    const loss = segments.reduce((sum, segment) => sum + Math.max(0, segment.elevationStart - segment.elevationEnd), 0);
-    const maxGrade = Math.max(...segments.map((segment) => Math.abs(segment.grade)));
     ids.add(candidate.id);
-    candidates.push({
-      id: candidate.id, labels: [], segments, geometry: [segments[0].start, ...segments.map((segment) => segment.end)],
-      meters, total, mean: total / meters, gain, loss, maxGrade, minutes: meters / metersPerSecond / 60,
-      warnings: maxGrade >= 0.12 ? ["Includes grade of at least 12%."] : [],
-    });
+    candidates.push(summarizeRoute(candidate.id, segments));
   }
   candidates.sort((a, b) => a.meters - b.meters || (a.id < b.id ? -1 : 1));
   const shortest = candidates[0];

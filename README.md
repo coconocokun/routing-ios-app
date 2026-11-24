@@ -33,9 +33,11 @@ The development bundle IDs are `org.walkingstudy.phone` and `org.walkingstudy.ph
 
 ## Routing and map data
 
-After both endpoints are selected, the planner uses the public Valhalla server for pedestrian routes and elevation and the public Overpass API for OSM paths near the endpoints. Place search uses the public Photon demo server with debounced queries and an approximate map center rounded to 0.1 degrees. To use other hosts, set `EXPO_PUBLIC_VALHALLA_URL`, `EXPO_PUBLIC_OVERPASS_URL` or `EXPO_PUBLIC_PHOTON_URL` in `.env.local`. See [.env.example](.env.example) and [Photon’s demo server usage](https://github.com/komoot/photon#demo-server).
+After both endpoints are selected, the app builds a local pedestrian graph from OpenStreetMap data and samples elevations from Mapzen Terrarium tiles. It searches for the shortest walking route, the route with the lowest total predicted energy in J/kg, and the lowest-energy route with slopes between −8% and +8% and a detour of at most 30%. Route details also report average J/kg/m. All three searches use the same modeled graph and snapped endpoints. See the [routing design](IOS_APP_DEVELOPMENT_PLAN.md#4-routing--predicted-walking-cost-algorithm) and [terrain data attribution](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
 
-Valhalla receives the selected endpoints and points along proposed routes for elevation lookup. Overpass receives the endpoints for the path overlay. The phone applies its route quality checks and signed Minetti scoring locally. Labels compare the usable candidates returned for that request. See the [iOS development plan](IOS_APP_DEVELOPMENT_PLAN.md#4-routing--predicted-walking-cost-algorithm) for the request flow, scoring rules and provider limits.
+The planner sends a bounding box derived from the endpoints to the provider configured by `EXPO_PUBLIC_OVERPASS_URL` in `.env.local`. If that request fails or times out, it tries `overpass-api.de`, Private.coffee, and VK Maps (`maps.mail.ru`) in order, skipping any duplicate endpoint. Without an override, it starts with `overpass-api.de`. The elevation host receives regional tile indices. Place search sends a debounced query and an approximate map center rounded to 0.1 degrees to Photon. See [.env.example](.env.example), [Overpass public instance guidance](https://dev.overpass-api.de/overpass-doc/en/preface/commons.html), [Private.coffee’s privacy policy](https://overpass.private.coffee/#privacy-policy), [VK Maps Overpass](https://maps.mail.ru/osm/tools/overpass/), and [Photon’s demo server usage](https://github.com/komoot/photon#demo-server).
+
+Expo includes `EXPO_PUBLIC_OVERPASS_URL` in the client bundle. For distribution, keep personal API keys on a server and configure its Overpass-compatible proxy URL here.
 
 ## Data handling
 
@@ -52,4 +54,4 @@ npx expo export --platform web
 npx expo export --platform ios --no-bytecode
 ```
 
-The fixtures cover signed grade, route classification, rejection of invalid candidates, manifest integrity, UTC clock alignment, pauses and GPS/HR gaps. Paired-device verification requires signed builds and physical hardware. Before participant use, verify screen-lock GPS, permission denial, a 30–60 minute Watch workout, disconnect and delayed sync, app relaunch, and export round trips under the approved study protocol.
+The fixtures cover signed grade, graph-based route search, pedestrian access, missing elevation, manifest integrity, UTC clock alignment, pauses and GPS/HR gaps. Paired-device verification requires signed builds and physical hardware. Before participant use, verify screen-lock GPS, permission denial, a 30–60 minute Watch workout, disconnect and delayed sync, app relaunch, and export round trips under the approved study protocol.

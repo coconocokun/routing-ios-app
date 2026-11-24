@@ -8,7 +8,7 @@ import MapView, { Marker, Polyline, type MapHandle, type MapPressEvent } from ".
 import { searchPlaces, type Place } from "../src/places";
 import { beginGps, currentLocation, requestLocation } from "../src/recording";
 import { demoRoutes, routeColors, type Point, type RouteSet } from "../src/routes";
-import { requestMapPaths, requestRoutes } from "../src/routing";
+import { requestRoutes } from "../src/routing";
 import { Body, Button, Label, MapAttribution, Metric, Notice, message, palette, styles } from "../src/ui";
 import { command, watchAvailable } from "../src/watch";
 
@@ -18,7 +18,7 @@ const fields = ["start", "destination"] as const;
 const destinationColor = "#ad4635";
 type Field = typeof fields[number];
 type Endpoints = Partial<Record<Field, Place>>;
-type RouteResponse = { start: Place; destination: Place } & ({ routes: RouteSet } | { error: string });
+type RouteResponse = { start: Place; destination: Place } & (Awaited<ReturnType<typeof requestRoutes>> | { error: string });
 
 export default function Plan() {
   const insets = useSafeAreaInsets();
@@ -38,7 +38,6 @@ export default function Plan() {
   const [response, setResponse] = useState<RouteResponse>();
   const [attempt, setAttempt] = useState(0);
   const [demo, setDemo] = useState<RouteSet>();
-  const [pathOverlay, setPathOverlay] = useState<{ routes: RouteSet; paths: Awaited<ReturnType<typeof requestMapPaths>> }>();
   const [selectedId, setSelectedId] = useState("");
   const [details, setDetails] = useState(false);
   const [title, setTitle] = useState("");
@@ -55,7 +54,7 @@ export default function Plan() {
   const route = routes?.choices.find((choice) => choice.id === selectedId) ?? routes?.choices[0];
   const routeError = result && "error" in result ? result.error : "";
   const findingRoutes = Boolean(start && destination && !routes && !routeError);
-  const mapPaths = pathOverlay?.routes === routes ? pathOverlay?.paths : undefined;
+  const mapPaths = !demo && result && "mapPaths" in result ? result.mapPaths : undefined;
   const target = editing ?? (!start ? "start" : !destination ? "destination" : null);
   const term = query.trim();
   const matches = search?.query === term && search.field === editing ? search : undefined;
@@ -84,23 +83,14 @@ export default function Plan() {
 
   useEffect(() => {
     if (!start || !destination || demo) return;
-    let active = true;
-    void requestRoutes(start.point, destination.point).then((routes) => {
-      if (active) setResponse({ start, destination, routes });
+    const controller = new AbortController();
+    void requestRoutes(start.point, destination.point, controller.signal).then((plan) => {
+      if (!controller.signal.aborted) setResponse({ start, destination, ...plan });
     }).catch((error: unknown) => {
-      if (active) setResponse({ start, destination, error: message(error) });
+      if (!controller.signal.aborted) setResponse({ start, destination, error: message(error) });
     });
-    return () => { active = false; };
+    return () => controller.abort();
   }, [start, destination, demo, attempt]);
-
-  useEffect(() => {
-    if (!routes || routes.demo) return;
-    let active = true;
-    void requestMapPaths(routes.origin, routes.destination).then((paths) => {
-      if (active) setPathOverlay({ routes, paths });
-    }).catch(() => { /* The basemap remains available without the path overlay. */ });
-    return () => { active = false; };
-  }, [routes]);
 
   useEffect(() => {
     if (!routes || routes.demo || Platform.OS === "web") return;
@@ -293,11 +283,13 @@ export default function Plan() {
                     disabled={Boolean(activity)} onPress={() => setSelectedId(choice.id)}
                     style={({ pressed }) => [plan.routeChoice, selected && { borderColor: color, backgroundColor: "#edf2ef" }, pressed && plan.pressed]}>
                     <View style={[plan.routeMark, { backgroundColor: selected ? color : "#778b9d" }]} />
-                    <Text style={plan.routeName}>{choice.labels[0]}</Text>
+                    <Text style={plan.routeName}>{choice.labels.join(" · ")}</Text>
                     <Text style={plan.routeStats}>{Math.ceil(choice.minutes)} min · {(choice.meters / 1000).toFixed(2)} km</Text>
+                    <Text style={plan.routeStats}>{Math.round(choice.total)} J/kg</Text>
                   </Pressable>;
                 })}
               </View>
+              {routes.warning && <Text style={plan.hint}>{routes.warning}</Text>}
               {routes.demo ? <Text style={plan.hint}>Synthetic routes · Live recording is disabled</Text> : <>
                 <View style={plan.switchRow}>
                   <Text style={plan.switchLabel} nativeID="authorize-walk">Authorize this walk and its data collection</Text>
@@ -312,7 +304,6 @@ export default function Plan() {
               </>}
               {route.warnings.map((warning) => <Text style={plan.hint} key={warning}>{warning}</Text>)}
               {details && <>
-                {route.labels.length > 1 && <Body>{route.labels.join(" · ")}</Body>}
                 <View style={styles.row}>
                   <Metric label="gain / loss" value={`${route.gain.toFixed(0)} / ${route.loss.toFixed(0)} m`} />
                   <Metric label="mean J/kg/m" value={route.mean.toFixed(2)} />
@@ -325,10 +316,13 @@ export default function Plan() {
                     autoCapitalize="characters" maxLength={24} />
                   <Body>{useWatch ? "Start navigation to start the paired Watch workout." : Platform.OS === "web" ?
                     "GPS-only test. Keep this tab open and visible while recording." : "GPS-only engineering test."}</Body>
-                  {mapPaths?.length ? <Body>Dashed lines show OSM paths and steps near the endpoints.</Body> : null}
+                  {routes.parameters.maxUphillGrade !== undefined && routes.parameters.minDownhillGrade !== undefined &&
+                    <Body>Grade-constrained routes stay between {100 * routes.parameters.minDownhillGrade}% and {100 * routes.parameters.maxUphillGrade}%
+                      {` and are at most ${Math.round(100 * (routes.parameters.maxDetour - 1))}% longer than the shortest route.`}</Body>}
+                  {mapPaths?.length ? <Body>Dashed lines show OSM paths near the endpoints.</Body> : null}
                 </>}
               </>}
-              {mapPaths?.length ? <MapAttribution /> : null}
+              {!routes.demo && <MapAttribution />}
             </ScrollView>
             {problem ? <Notice>{problem}</Notice> : null}
             <TextInput accessibilityLabel="Trial label" style={[styles.input, plan.trialInput]} value={title} onChangeText={setTitle}
@@ -353,7 +347,7 @@ export default function Plan() {
                 <Text style={plan.action}>Explore demo routes</Text>
               </Pressable>
             </View>
-            {!findingRoutes && !routeError && <Text style={plan.hint}>Route planning shares selected points with Valhalla and Overpass.</Text>}
+            {!findingRoutes && !routeError && <Text style={plan.hint}>Route planning requests nearby paths from Overpass and regional elevation tiles.</Text>}
           </>}
         </View>}
       </View>

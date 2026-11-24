@@ -1,11 +1,13 @@
 import { deepEqual, equal, match, ok, rejects, throws } from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { encode } from "fast-png";
 import { analyze, walkDuration } from "../src/analysis.ts";
 import { searchPlaces } from "../src/places.ts";
 import { canonicalSamples, manifestMatches, readBatch, readEnvelope, readManifest } from "../src/protocol.ts";
 import { demoRoutes, distance, scoreRoutes, walkingCost } from "../src/routes.ts";
-import { requestMapPaths, requestRoutes } from "../src/routing.ts";
+import { findStudyRoutes } from "../src/routeSearch.ts";
+import { requestRoutes } from "../src/routing.ts";
 
 const epoch = 1795417200000;
 const session = "1e1c47b3-5e8f-47d2-9ac1-4dfe261431f7";
@@ -60,10 +62,26 @@ test("unwalkable, missing-elevation and repeated-node paths are excluded", () =>
   throws(() => scoreRoutes(routes.origin, routes.destination, { ...routes, candidates }), /No candidate/);
 });
 
-const planStart = { latitude: 0, longitude: 0 };
-const planEnd = { latitude: 0, longitude: 0.001 };
-const directTrip = { legs: [{ shape: "???g^?g^" }] };
-const alternateTrip = { legs: [{ shape: "??sNg^rNg^" }] };
+const planStart = { latitude: 0.002, longitude: 0.002 };
+const planEnd = { latitude: 0.002, longitude: 0.004 };
+const osmWay = (id, nodes, points, tags) => ({ type: "way", id, nodes,
+  tags: { highway: "footway", ...tags }, geometry: points.map(({ latitude, longitude }) => ({ lat: latitude, lon: longitude })) });
+
+function terrainTile(heightAt) {
+  const data = new Uint8Array(256 * 256 * 3);
+  for (let row = 0; row < 256; row++) {
+    const latitude = Math.atan(Math.sinh(Math.PI * (1 - 2 * (4095 + (row + 0.5) / 256) / 8192))) * 180 / Math.PI;
+    for (let col = 0; col < 256; col++) {
+      const longitude = (4096 + (col + 0.5) / 256) / 8192 * 360 - 180;
+      const packed = Math.round((32768 + heightAt(latitude, longitude)) * 256);
+      const index = (row * 256 + col) * 3;
+      data[index] = packed >> 16;
+      data[index + 1] = packed >> 8;
+      data[index + 2] = packed;
+    }
+  }
+  return encode({ data, width: 256, height: 256, channels: 3 });
+}
 
 test("place search keeps valid results and sends a rounded bias center", async (t) => {
   const { signal } = new AbortController();
@@ -86,57 +104,151 @@ test("place search keeps valid results and sends a rounded bias center", async (
   ]);
 });
 
-test("Valhalla pedestrian alternatives retain bends and are compared with sampled elevation", async (t) => {
+test("the planner builds an OSM graph and finds a lower-energy route around a hill", async (t) => {
+  const via = [{ latitude: 0.00245, longitude: 0.0026 }, { latitude: 0.00245, longitude: 0.0034 }];
+  const hill = terrainTile((lat, lon) => 17 * Math.max(0, 1 - Math.abs(lon - 0.003) / 0.00087 - Math.abs(lat - 0.002) / 0.00034));
   const fetch = t.mock.method(globalThis, "fetch", async (url, { body, headers, method }) => {
-    equal(method, "POST");
-    equal(headers["X-Client-Id"], "org.walkingstudy.phone");
-    const request = JSON.parse(body);
-    if (url.endsWith("/route")) {
-      equal(request.costing, "pedestrian");
-      equal(request.costing_options.pedestrian.shortest, true);
-      equal(request.alternates, 2);
-      deepEqual(request.locations, [{ lat: 0, lon: 0, search_cutoff: 60 }, { lat: 0, lon: 0.001, search_cutoff: 60 }]);
-      return Response.json({ trip: directTrip, alternates: [{ trip: alternateTrip }, { trip: directTrip }] });
+    if (method === "POST") {
+      match(headers["User-Agent"], /^WalkingStudy\//);
+      const query = new URLSearchParams(body).get("data");
+      match(query, /\[bbox:[^\]]+\].*way\[highway.*out geom\(/);
+      match(query, /node\[barrier\]/);
+      return Response.json({ osm3s: { timestamp_osm_base: "2026-01-01T00:00:00Z" }, elements: [
+        osmWay(1, [10, 20], [planStart, planEnd]),
+        osmWay(2, [10, 11, 12, 20], [planStart, ...via, planEnd]),
+      ] });
     }
-    match(url, /\/height$/);
-    equal(request.shape.length, 10);
-    ok(request.shape[7].lat > 0);
-    return Response.json({ height: [0, 2, 4, 6, 8, 0, 0, 0, 0, 0] });
+    match(url, /\/13\/4096\/4095\.png$/);
+    return new Response(hill);
   });
-  const routes = await requestRoutes(planStart, planEnd);
+  const { routes, mapPaths } = await requestRoutes(planStart, planEnd);
   equal(fetch.mock.callCount(), 2);
-  equal(routes.candidates.length, 2);
-  equal(routes.choices[0].id, "valhalla-1");
-  equal(routes.choices[0].gain, 8);
-  equal(routes.choices[1].labels.includes("Lowest J/kg/m"), true);
-  ok(routes.choices[1].geometry.some(({ latitude }) => latitude === 0.00025));
+  equal(mapPaths.length, 2);
+  match(routes.graphVersion, /2026-01-01T00:00:00Z/);
+  const [shortest, energy] = routes.choices;
+  deepEqual(shortest.labels, ["Shortest"]);
+  deepEqual(energy.labels, ["Minimum energy", "Grade constrained"]);
+  ok(shortest.maxGrade > 0.08);
+  ok(energy.total < shortest.total);
+  ok(energy.meters > shortest.meters);
+  ok(energy.geometry.some(({ latitude }) => latitude === via[0].latitude));
+  for (const segment of shortest.segments) {
+    ok(segment.horizontalMeters <= 30.01);
+    equal(segment.meters, Math.hypot(segment.horizontalMeters, segment.elevationEnd - segment.elevationStart));
+  }
+  equal(shortest.total, shortest.segments.reduce((sum, edge) => sum + edge.meters * walkingCost(edge.grade), 0));
 });
 
-test("Valhalla drops routes with missing elevations and rejects a plan with no complete profile", async (t) => {
-  let hasCompleteProfile = true;
-  t.mock.method(globalThis, "fetch", async (url) => url.endsWith("/route")
-    ? Response.json({ trip: directTrip, alternates: [{ trip: alternateTrip }] })
-    : Response.json({ height: [0, null, 0, 0, 0, 0, hasCompleteProfile ? 0 : null, 0, 0, 0] }));
-  const routes = await requestRoutes(planStart, planEnd);
-  deepEqual(routes.candidates.map(({ id }) => id), ["valhalla-2"]);
-  hasCompleteProfile = false;
-  await rejects(requestRoutes(planStart, planEnd), /no complete elevation profile/);
-});
-
-test("Overpass requests path geometry near both endpoints and filters invalid ways", async (t) => {
-  t.mock.method(globalThis, "fetch", async (_url, { body, headers, method }) => {
-    equal(method, "POST");
-    match(headers["User-Agent"], /^WalkingStudy\//);
-    const query = new URLSearchParams(body).get("data");
-    match(query, /way\[highway.*around:200,0\.000000,0\.000000/);
-    match(query, /around:200,0\.000000,0\.001000/);
-    return Response.json({ elements: [
-      { type: "way", id: 1, geometry: [{ lat: 0, lon: 0 }, { lat: 0, lon: 0.001 }] },
-      { type: "way", id: 2, geometry: [{ lat: 0, lon: 0 }, { lat: 91, lon: 0 }] },
-      { type: "node", id: 3, lat: 0, lon: 0 },
-    ] });
+test("web routing tries both Overpass backups after a timeout and a server error", async (t) => {
+  const previousPlatform = process.env.EXPO_OS;
+  process.env.EXPO_OS = "web";
+  t.after(() => {
+    if (previousPlatform === undefined) delete process.env.EXPO_OS;
+    else process.env.EXPO_OS = previousPlatform;
   });
-  deepEqual(await requestMapPaths(planStart, planEnd), [{ id: 1, points: [planStart, planEnd] }]);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const flat = terrainTile(() => 0);
+  const providers = [];
+  const fetch = t.mock.method(globalThis, "fetch", async (url, options) => {
+    const endpoint = new URL(url);
+    if (!endpoint.pathname.endsWith("/interpreter")) return new Response(flat);
+    providers.push(endpoint.host);
+    equal(options.method ?? "GET", "GET");
+    equal(options.body, undefined);
+    deepEqual(options.headers, { Accept: "application/json" });
+    match(endpoint.searchParams.get("data"), /\[bbox:[^\]]+\].*way\[highway.*out geom\(/);
+    if (providers.length === 1) {
+      return new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+    }
+    equal(options.signal.aborted, false);
+    if (providers.length === 2) return new Response(null, { status: 503 });
+    equal(endpoint.pathname, "/osm/tools/overpass/api/interpreter");
+    return Response.json({ elements: [osmWay(1, [10, 20], [planStart, planEnd])] });
+  });
+
+  const plan = requestRoutes(planStart, planEnd);
+  deepEqual(providers, ["overpass-api.de"]);
+  t.mock.timers.tick(15_000);
+  const { routes } = await plan;
+  deepEqual(providers, ["overpass-api.de", "overpass.private.coffee", "maps.mail.ru"]);
+  match(routes.graphVersion, /maps\.mail\.ru/);
+  equal(routes.choices.length, 1);
+  equal(fetch.mock.calls[2].arguments[1].signal.aborted, false);
+});
+
+test("a configured Overpass URL is tried before the public providers", async (t) => {
+  const savedUrl = process.env.EXPO_PUBLIC_OVERPASS_URL;
+  const configuredUrl = "https://overpass.example.test/test-key/api/interpreter";
+  process.env.EXPO_PUBLIC_OVERPASS_URL = configuredUrl;
+  t.after(() => {
+    if (savedUrl === undefined) delete process.env.EXPO_PUBLIC_OVERPASS_URL;
+    else process.env.EXPO_PUBLIC_OVERPASS_URL = savedUrl;
+  });
+  const { requestRoutes: requestConfiguredRoutes } = await import("../src/routing.ts?configured-provider-test");
+  const flat = terrainTile(() => 0);
+  const attempts = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    const endpoint = new URL(url);
+    if (!endpoint.pathname.endsWith("/interpreter")) return new Response(flat);
+    attempts.push(endpoint.origin + endpoint.pathname);
+    if (endpoint.hostname === "overpass.example.test") return new Response(null, { status: 503 });
+    return Response.json({ elements: [osmWay(1, [10, 20], [planStart, planEnd])] });
+  });
+  const { routes } = await requestConfiguredRoutes(planStart, planEnd);
+  deepEqual(attempts, [configuredUrl, "https://overpass-api.de/api/interpreter"]);
+  match(routes.graphVersion, /overpass-api\.de/);
+});
+
+test("canceling a route request aborts the active fetch without starting a backup request", async (t) => {
+  const controller = new AbortController();
+  const fetch = t.mock.method(globalThis, "fetch", async (_url, { signal }) =>
+    new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })));
+  const plan = requestRoutes(planStart, planEnd, controller.signal);
+  controller.abort();
+  await rejects(plan, { name: "AbortError" });
+  equal(fetch.mock.callCount(), 1);
+});
+
+test("endpoint snapping splits a pedestrian one-way and cannot reverse through blocked shortcuts", async (t) => {
+  const slope = terrainTile((_, longitude) => (longitude - 0.002) * 6000);
+  const elements = [
+    osmWay(1, [1, 2], [planStart, planEnd], { "oneway:foot": "yes" }),
+    osmWay(2, [1, 2], [planStart, planEnd], { bridge: "yes" }),
+    osmWay(3, [1, 2], [planStart, planEnd], { highway: "steps" }),
+    osmWay(4, [1, 5, 2], [planStart, { latitude: 0.0023, longitude: 0.003 }, planEnd]),
+    osmWay(5, [1, 2], [planStart, planEnd], { access: "private" }),
+    { type: "node", id: 5, tags: { barrier: "gate" } },
+  ];
+  t.mock.method(globalThis, "fetch", async (_url, { method }) => method === "POST" ?
+    Response.json({ elements }) : new Response(slope));
+  const interior = { ...planStart, longitude: 0.00261 };
+  const { routes } = await requestRoutes(interior, planEnd);
+  deepEqual(routes.choices[0].labels, ["Shortest", "Minimum energy", "Grade constrained"]);
+  ok(distance(routes.choices[0].geometry[0], interior) < 0.01);
+  await rejects(requestRoutes(planEnd, interior), /No walking route connects/);
+  elements[0].tags["oneway:foot"] = "no";
+  const reversed = (await requestRoutes(planEnd, interior)).routes.choices[0];
+  ok(reversed.segments.every(({ grade }) => grade < 0));
+  ok(reversed.total < routes.choices[0].total);
+});
+
+test("missing elevation tiles never become zero-grade edges", async (t) => {
+  t.mock.method(globalThis, "fetch", async (_url, { method }) => method === "POST" ?
+    Response.json({ elements: [osmWay(1, [10, 20], [planStart, planEnd])] }) : new Response(null, { status: 404 }));
+  await rejects(requestRoutes(planStart, planEnd), /No walking path with usable terrain data/);
+});
+
+test("constrained search keeps competing energy and distance labels at a junction", () => {
+  const edge = (from, to, meters, grade) => ({ from, to, meters, grade, cost: walkingCost(grade),
+    start: planStart, end: planEnd, elevationStart: 0, elevationEnd: meters * grade });
+  const graph = [edge("start", "junction", 45, 0.08), edge("junction", "end", 45, 0.08),
+    edge("start", "north", 35, -0.04), edge("north", "junction", 35, -0.04),
+    edge("junction", "south", 35, -0.08), edge("south", "end", 35, -0.08)];
+  const { choices } = findStudyRoutes(graph, "start", "end");
+  deepEqual(choices.map((route) => route.meters), [90, 140, 115]);
+  deepEqual(choices[2].segments.map(({ to }) => to), ["junction", "south", "end"]);
+  ok(choices[2].total < choices[0].total);
+  ok(choices[2].total > choices[1].total);
 });
 
 test("canonical checksum is stable under out-of-order delivery and changes when BPM changes", () => {

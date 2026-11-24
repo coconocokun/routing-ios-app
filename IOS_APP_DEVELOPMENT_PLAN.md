@@ -10,7 +10,7 @@
 | ID | Feature | MVP acceptance criterion |
 |---|---|---|
 | IOS-01 | Origin / destination | User can select two map points or choose current position as start. |
-| IOS-02 | Route planning | Request pedestrian alternatives from Valhalla for the same endpoints. Score the candidates with complete elevation and show up to three distinct choices. |
+| IOS-02 | Route planning | Build a local pedestrian graph and find the shortest, minimum-energy and grade-constrained walking routes. |
 | IOS-03 | Route comparison | Display color-coded paths and length, elevation gain, total predicted J/kg, predicted J/kg/m, and anticipated duration. |
 | IOS-04 | Live location | Record timestamp, coordinates, horizontal accuracy, optionally elevation/altitude accuracy, speed and heading during active trial. |
 | IOS-05 | Guidance | Show selected route and next waypoint/turn; automatically follow current marker; warn on a meaningful deviation. |
@@ -29,7 +29,7 @@
 - **Storage:** `expo-sqlite` for trial/route/sample records, file system for export ZIP/JSON/CSV bundles, OS share sheet for intentional external sharing. Database encryption via SQLCipher is a deliberate optional extension; at minimum use iOS device protections and avoid logging sensitive data.
 - **Charts:** A React Native chart/SVG or Skia library selected after profiling; custom data transformations in pure TypeScript so research calculations don't depend on the chart component.
 - **Connectivity:** a native bridge around `WCSession`, or the validated all-React watchOS package's WatchConnectivity bridge. Keep a shared JSON message schema independent of package.
-- **Route computation.** `src/routing.ts` calls Valhalla for route candidates and terrain heights. `src/routes.ts` scores the candidates. The phone saves usable candidate geometry, elevation and metrics before a trial starts.
+- **Route computation.** `src/routing.ts` downloads OpenStreetMap data and elevation tiles. `src/pedestrianGraph.ts` builds the directed graph and `src/routeSearch.ts` optimizes the routes. The phone saves route geometry, elevation and metrics before a trial starts.
 
 **Repository layout (illustrative):**
 
@@ -63,9 +63,9 @@ repo/
 
 ### Plan and compare
 - Set the start and destination by tapping the full-screen map or using the search fields. The start also supports current location. Load routes automatically after both endpoints are confirmed.
-- Render up to three distinct paths with the `Shortest`, `Lowest J/kg/m`, and `Balanced` labels. Labels compare the usable Valhalla candidates for this request.
+- Render up to three distinct paths labeled `Shortest`, `Minimum energy`, and `Grade constrained`.
 - Compare distance and estimated time in the bottom sheet, with gain and loss, mean and total predicted cost, maximum grade and warnings available for the selected route.
-- Tap a route to highlight it. Use Valhalla's pedestrian access rules and exclude routes reported to include ferries. Verify study corridors in the field before participant use.
+- Tap a route to highlight it. Use the modeled OpenStreetMap walking network. Verify local access and terrain on study corridors in the field before participant use.
 - If 2 methods produce the same geometry, mark that they coincide; show fewer than 3 truly different choices rather than inventing a route.
 
 ### Preflight and recording
@@ -85,10 +85,9 @@ repo/
 
 ### Source pipeline
 
-1. Request a distance-costed pedestrian path and up to two alternates from Valhalla's OSM graph. Decode the polyline6 geometries, remove duplicate shapes and check that each path snaps within 60 m of the selected endpoints.
-2. Sample evenly along each path at roughly 30 m spacing, including its endpoints. Send all sample points in one Valhalla `/height` request. Reject a candidate when any sample is missing or invalid.
-3. Preserve the shape vertices, split long segments at intervals of at most 30 m and interpolate terrain elevation along the path. The DEM estimates ground elevation, which may differ from the walking surface on bridges and in tunnels.
-4. For segment `i`, calculate horizontal distance `d_i` (m) and signed grade `g_i = (z_end-z_start)/d_i` (m/m; uphill positive), then evaluate **the walking equation** of Minetti et al. (2002):
+1. Request OpenStreetMap way geometries, access tags and tagged barriers from Overpass within a padded bounding box around the selected points. The planner supports endpoints up to 5 km apart. Ways connect at shared OSM node IDs. Pedestrian access and direction tags determine which directions are available. The study graph excludes steps, bridges, tunnels, fords and known unsuitable surfaces.
+2. Preserve OSM geometry and split longer segments at intervals of at most 30 m. Interpolate terrain elevation from surrounding pixels in zoom 13 Terrarium tiles. Exclude segments with missing elevation or absolute grades above the app's 25% modeling limit. Snap the two endpoints within 60 m of the remaining segments. All objectives use these same snaps.
+3. Calculate horizontal distance `d_i` and signed grade `g_i = (z_end-z_start)/d_i` for every directed segment. Use Minetti et al. (2002) to estimate its walking cost.
 
    ```text
    Cw(g) = 280.5*g^5 - 58.7*g^4 - 76.8*g^3
@@ -97,20 +96,18 @@ repo/
    Units: J / (kg · m) of distance walked
    ```
 
-   **Use signed grade, not absolute grade.** This empirical polynomial is not safely extrapolated outside the study's validated gradient range. Impose a predeclared grade domain/cost policy, log out-of-range segments and reject candidates with unreliable or implausible elevation/grade; do not clip silently or let extrapolation create negative costs.
-
-5. Compute for a route `P`:
+4. Calculate walking distance `s_i` from the horizontal distance and elevation change. Sum the walked distance and predicted energy over the route.
 
    ```text
-   distance(P)     = Σ d_i                                 [m]
-   mass_cost(P)    = Σ Cw(g_i) * d_i                        [J/kg]
+   s_i             = sqrt(d_i^2 + (z_end-z_start)^2)         [m]
+   distance(P)     = Σ s_i                                 [m]
+   mass_cost(P)    = Σ Cw(g_i) * s_i                        [J/kg]
    avg_cost(P)     = mass_cost(P) / distance(P)             [J/kg/m]
    total_cost_J(P) = mass_cost(P) * mass_kg                  [J] (optional)
    ```
 
-6. Reject paths with repeated nodes, gaps or absolute grades above 25%. Cap the detour at 1.35 times the shortest usable candidate's distance. Merge labels for the same route and suppress substantially overlapping choices where detected.
-7. Rank complete candidates by distance for `Shortest` and by average cost for `Lowest J/kg/m`. For `Balanced`, weight normalized distance and normalized total cost equally. Use stable tie-breaking and preserve all usable candidate metrics.
-8. Save route geometry, interpolated elevation, scores, algorithm version and provider metadata. Mark the public Valhalla graph and DEM as unversioned because the responses lack snapshot identifiers. Freeze the saved routes throughout a study comparison.
+5. Use Dijkstra's algorithm for shortest distance and minimum total energy. To find the constrained route, remove edges with grades outside −8% to +8% and search using both distance and total energy, with a distance cap of 1.30 times the shortest route. At each junction, retain competing arrivals when one is shorter and the other uses less energy. If the constrained search has no feasible route or reaches its processing limit, show a message alongside the available routes.
+6. Merge labels when the searches produce the same path. Save route geometry, interpolated elevation, metrics, algorithm version and provider metadata, including the OSM base timestamp when available. Freeze these saved routes throughout a study comparison.
 
 **Critical research caution:** A route can have lower J/kg/m **yet higher total J/kg** because it is longer. Compare both outcomes; the experiment should not assume reduced mean cost implies reduced average HR.
 
@@ -118,13 +115,14 @@ repo/
 
 | Expo variable | Default endpoint | Use |
 |---|---|---|
-| `EXPO_PUBLIC_VALHALLA_URL` | `https://valhalla1.openstreetmap.de/` | POST `/route` and `/height` with the app's `X-Client-Id`. |
-| `EXPO_PUBLIC_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | POST one Overpass QL query for footways, paths, pedestrian ways and steps within 200 m of either endpoint. Identify the app with its `User-Agent`. |
+| `EXPO_PUBLIC_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | GET on web and POST on iOS for the routing area. Reuse its footpath geometries for the map overlay. |
+| `EXPO_PUBLIC_TERRARIUM_URL` | `https://s3.amazonaws.com/elevation-tiles-prod/terrarium` | GET 256×256 Terrarium PNG tiles using `/{z}/{x}/{y}.png`. |
+| `EXPO_PUBLIC_TERRARIUM_VERSION` | Derived from the tile source | Provide the dataset identifier for a pinned study elevation source. |
 | `EXPO_PUBLIC_PHOTON_URL` | `https://photon.komoot.io` | GET `/api/` for place and address suggestions, with a search term and an approximate map center. |
 
 - The public endpoints are enabled by default. Use `.env.local` to override provider URLs, for example with a study deployment that pins the graph and DEM revisions.
-- After both endpoints are confirmed, the planner sends them and the terrain sample coordinates to Valhalla. It sends the confirmed endpoints to Overpass for the path overlay. Typing a place search sends the term and an approximate map center to Photon. GPS recordings, Watch readings and trial identifiers stay local.
-- Keep Overpass requests small and wait at least 30 seconds after an Overpass HTTP 429. If Overpass is unavailable, show the route choices with the basemap. If Valhalla routing or elevation is unavailable, show the error and keep the synthetic demo available.
+- The planner sends a bounding box to Overpass and regional tile indices to the elevation provider. Typing a place search sends the term and an approximate map center to Photon. GPS recordings, Watch readings and trial identifiers stay local.
+- The planner tries the configured Overpass URL first, then `overpass-api.de`, Private.coffee, and VK Maps in that order, skipping duplicates. It stops at the first complete response. Each attempt has a 15-second deadline. After HTTP 429 or 406, the planner pauses requests to that host for 30 seconds. If all attempts fail, the planner reports the provider errors and keeps the synthetic demo available.
 - Public services can change their data and limits. Review the operators' fair-use requirements before distributing the app with these endpoints.
 - Persist the selected route and candidate metrics locally before the walk so navigation can use the saved geometry without another route request.
 
@@ -190,7 +188,6 @@ Every chart must allow the user to inspect session metadata (route category/vers
 - Expo Maps: https://docs.expo.dev/versions/latest/sdk/maps/
 - React Native Maps: https://docs.expo.dev/versions/latest/sdk/map-view/
 - Minetti et al. (2002): https://doi.org/10.1152/japplphysiol.01177.2001
-- [Valhalla routing API](https://valhalla.github.io/valhalla/api/route/api-reference/) and [elevation API](https://valhalla.github.io/valhalla/api/elevation/api-reference/)
-- [Valhalla public demo server](https://github.com/valhalla/valhalla#demo-server)
-- [Overpass public instance limits](https://dev.overpass-api.de/overpass-doc/en/preface/commons.html) and [operator usage rules](https://github.com/drolbr/Overpass-API/issues/791)
+- [Mapzen terrain tile format](https://www.mapzen.com/blog/terrain-tile-service/) and [DEM attribution](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)
+- [Private.coffee Overpass terms and privacy policy](https://overpass.private.coffee/) and [Overpass public instance limits](https://dev.overpass-api.de/overpass-doc/en/preface/commons.html)
 - [OpenStreetMap attribution and license](https://www.openstreetmap.org/copyright)

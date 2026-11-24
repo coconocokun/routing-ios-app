@@ -32,4 +32,4 @@ Use short, imperative commit subjects such as `Fix Watch sync after relaunch`. I
 
 ## Configuration
 
-Use `.env.example` as the template for `.env.local`. Set `WALKING_STUDY_APPLE_TEAM_ID` for signing. Override `EXPO_PUBLIC_VALHALLA_URL` and `EXPO_PUBLIC_OVERPASS_URL` when using alternate routing and map-data hosts. Use synthetic data in fixtures and screenshots.
+Use `.env.example` as the template for `.env.local`. Set `WALKING_STUDY_APPLE_TEAM_ID` for signing. Override `EXPO_PUBLIC_OVERPASS_URL` and `EXPO_PUBLIC_TERRARIUM_URL` when using alternate map and elevation data hosts. Use synthetic data in fixtures and screenshots.
