@@ -16,6 +16,7 @@ export default function Home() {
     let mounted = true;
     const load = async () => {
       try {
+        setWatch(watchStatus());
         const [current, foreground, background] = await Promise.all([
           database().then(active),
           web ? Location.getForegroundPermissionsAsync().catch(() => null) : Location.getForegroundPermissionsAsync(),
@@ -23,7 +24,6 @@ export default function Home() {
         ]);
         if (!mounted) return;
         setTrial(current);
-        setWatch(watchStatus());
         setLocation(background?.granted ? "Always allowed" : foreground?.granted ? (web ? "While this tab is open" : "While using the app") :
           web ? "Browser permission required for live walks" : "Permission required");
       } catch (error) { if (mounted) setProblem(message(error)); }

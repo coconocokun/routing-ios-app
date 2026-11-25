@@ -1,5 +1,7 @@
 import { deepEqual, equal, match, ok, rejects, throws } from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import test from "node:test";
 import { encode } from "fast-png";
 import { analyze, walkDuration } from "../src/analysis.ts";
@@ -31,6 +33,17 @@ function fix(seconds, fraction, gps_seq) {
 }
 const batch = (samples) => ({ watch_session_id: session, batch_id: "one", seq_start: samples[0].watch_seq,
   seq_end: samples.at(-1).watch_seq, samples, sha256: sha(canonicalSamples(samples)) });
+
+test("Expo autolinks the iOS Watch bridge and launch subscriber", () => {
+  const autolinking = createRequire(import.meta.url).resolve("expo/bin/autolinking");
+  const { modules } = JSON.parse(execFileSync(process.execPath, [autolinking, "resolve", "--platform", "ios", "--json"], {
+    cwd: new URL("../", import.meta.url), encoding: "utf8",
+  }));
+  const bridge = modules.find((module) => module.packageName === "walk-connectivity");
+  ok(bridge?.pods.some((pod) => pod.podName === "WalkConnectivity"));
+  ok(bridge.modules.some((module) => module.class === "WalkConnectivityModule"));
+  ok(bridge.appDelegateSubscribers.includes("WalkConnectivitySubscriber"));
+});
 
 test("Minetti model uses signed slope", () => {
   equal(walkingCost(0), 2.5);

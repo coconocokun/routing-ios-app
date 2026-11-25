@@ -1,4 +1,3 @@
-import { requireOptionalNativeModule } from "expo";
 import { randomUUID } from "expo-crypto";
 import { openDatabaseAsync } from "expo-sqlite";
 import { Platform } from "react-native";
@@ -15,10 +14,9 @@ export type Trial = {
 };
 
 let connection: ReturnType<typeof openDatabaseAsync> | undefined;
-const native = requireOptionalNativeModule<{ databaseDirectory: () => string }>("WalkConnectivity");
 export function database() {
   connection ??= (async () => {
-    const db = await openDatabaseAsync("walking-study.db", {}, native?.databaseDirectory());
+    const db = await openDatabaseAsync("walking-study.db");
     await db.execAsync(`
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
